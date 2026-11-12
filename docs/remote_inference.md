@@ -69,3 +69,9 @@ for step in range(num_steps):
 ```
 
 Here, the `host` and `port` arguments specify the IP address and port of the remote policy server. You can also specify these as command-line arguments to your robot code, or hard-code them in your robot codebase. The `observation` is a dictionary of observations and the prompt, following the specification of the policy inputs for the policy you are serving. We have concrete examples of how to construct this dictionary for different environments in the [simple client example](../examples/simple_client/main.py).
+
+## Serving multiple robots with dynamic admission
+
+For opt-in server-driven collection, capacity profiling and stable dynamic slot
+allocation across multiple clients, see [Multi-robot VLA serving](multi_robot_serving.md).
+The existing inference RPC protocol above remains the default.

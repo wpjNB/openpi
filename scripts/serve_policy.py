@@ -1,12 +1,18 @@
+import asyncio
 import dataclasses
 import enum
+import json
 import logging
+import pathlib
 import socket
 
+from openpi_client import msgpack_numpy
 import tyro
 
 from openpi.policies import policy as _policy
 from openpi.policies import policy_config as _policy_config
+from openpi.serving import multi_robot_server
+from openpi.serving import slot_scheduler
 from openpi.serving import websocket_policy_server
 from openpi.training import config as _config
 
@@ -48,6 +54,20 @@ class Args:
 
     # Port to serve the policy on.
     port: int = 8000
+    # Opt-in homogeneous, batch-one multi-robot scheduling. Legacy protocol remains the default.
+    multi_robot: bool = False
+    # Msgpack observation representative of the deployed input shapes and maximum text length.
+    profile_observation: pathlib.Path | None = None
+    # JSON object describing cameras/resolution/history; clients must match exactly.
+    input_spec: str = "{}"
+    # Stable slot capacity, observation lead time and online overload detection.
+    scheduler: slot_scheduler.SchedulerConfig = dataclasses.field(default_factory=slot_scheduler.SchedulerConfig)
+    # Number of completed warmup calls before measuring latency.
+    profile_warmup: int = 30
+    # Number of completed calls used for startup latency percentiles.
+    profile_runs: int = 300
+    # Multiply measured P99 by this factor for admission and monitoring.
+    profile_margin: float = 1.2
     # Record the policy's behavior for debugging.
     record: bool = False
 
@@ -107,6 +127,29 @@ def main(args: Args) -> None:
     hostname = socket.gethostname()
     local_ip = socket.gethostbyname(hostname)
     logging.info("Creating server (host: %s, ip: %s)", hostname, local_ip)
+
+    if args.multi_robot:
+        if args.profile_observation is None:
+            raise ValueError("--multi-robot requires --profile-observation")
+        sample = msgpack_numpy.unpackb(args.profile_observation.read_bytes())
+        input_spec = json.loads(args.input_spec)
+        if not isinstance(sample, dict) or not isinstance(input_spec, dict):
+            raise ValueError("Profiling observation and input spec must be objects")
+        checkpoint = args.policy if isinstance(args.policy, Checkpoint) else DEFAULT_CHECKPOINT[args.env]
+        server = multi_robot_server.MultiRobotServer(
+            policy,
+            sample,
+            policy_id=checkpoint.config,
+            input_spec=input_spec,
+            action_horizon=_config.get_config(checkpoint.config).model.action_horizon,
+            config=args.scheduler,
+            port=args.port,
+            warmup=args.profile_warmup,
+            runs=args.profile_runs,
+            margin=args.profile_margin,
+        )
+        asyncio.run(server.run())
+        return
 
     server = websocket_policy_server.WebsocketPolicyServer(
         policy=policy,
