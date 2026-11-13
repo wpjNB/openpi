@@ -150,3 +150,6 @@ per-robot model state or automatic frequency offers. GPU throughput and actual
 checkpoint inference need validation on the target hardware. `/healthz` is a
 liveness endpoint, including when scheduling is suspended. As with the legacy
 server, authentication/TLS must be supplied by the deployment gateway if needed.
+
+For a step-by-step Chinese experiment guide, including client-count sweeps and a
+replay load generator, see [完整实验手册](multi_robot_experiment_zh.md).
