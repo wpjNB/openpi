@@ -2,12 +2,15 @@
 
 import asyncio
 import dataclasses
+import enum
 import time
 
 import numpy as np
 from openpi_client.scheduled_client import run_robot
 import tyro
 
+from openpi.serving.edf_server import EDFConfig
+from openpi.serving.edf_server import EDFRobotServer
 from openpi.serving.multi_robot_server import MultiRobotServer
 from openpi.serving.slot_scheduler import SchedulerConfig
 
@@ -18,16 +21,28 @@ class DemoPolicy:
         return {"actions": np.zeros((30, 7), dtype=np.float32)}
 
 
+class Mode(enum.Enum):
+    FIXED = "fixed"
+    EDF = "edf"
+
+
 @dataclasses.dataclass
 class Args:
     clients: int = 8
     duration: float = 2.0
+    mode: Mode = Mode.FIXED
+    prefetch: bool = True
+    capture_delay_ms: float = 0
 
 
 async def main(args: Args):
     if args.clients < 1 or args.duration <= 0:
         raise ValueError("clients and duration must be positive")
-    server = MultiRobotServer(
+    if args.capture_delay_ms < 0:
+        raise ValueError("capture_delay_ms must be nonnegative")
+    server_class = EDFRobotServer if args.mode is Mode.EDF else MultiRobotServer
+    options = {"edf": EDFConfig(prefetch=args.prefetch)} if args.mode is Mode.EDF else {}
+    server = server_class(
         DemoPolicy(),
         {"state": np.zeros(7, np.float32)},
         policy_id="demo",
@@ -38,6 +53,7 @@ async def main(args: Args):
         port=0,
         warmup=2,
         runs=5,
+        **options,
     )
     clients = []
     counts = [0] * args.clients
@@ -48,6 +64,11 @@ async def main(args: Args):
 
         def record(index, result):
             counts[index] += 1
+
+        def observe():
+            if args.capture_delay_ms:
+                time.sleep(args.capture_delay_ms / 1000)
+            return {"state": np.zeros(7, np.float32)}
 
         for index in range(args.clients):
             clients.append(  # noqa: PERF401
@@ -61,9 +82,9 @@ async def main(args: Args):
                             "target_hz": 5,
                             "min_hz": 3,
                             "action_hz": 50,
-                            "max_latency_ms": 100,
+                            "max_latency_ms": 200 if args.mode is Mode.EDF else 100,
                         },
-                        lambda: {"state": np.zeros(7, np.float32)},
+                        observe,
                         lambda result, index=index: record(index, result),
                         events.append,
                     )
@@ -74,7 +95,11 @@ async def main(args: Args):
             if client.done():
                 client.result()
         print(f"Measured service budget: {server.profile.service_budget * 1000:.1f} ms")
-        print(f"Capacity: {len(server.pool.slots)}; connected: {len(server.sessions)}")
+        if isinstance(server, EDFRobotServer):
+            print(f"Prefetch: {server.prefetch_stats}")
+        else:
+            print(f"Capacity: {len(server.pool.slots)}; connected: {len(server.sessions)}")
+        print("Granted Hz:", [event["assigned_hz"] for event in events if event["type"] == "register_ack"])
         print(f"Action chunks per client: {counts}")
     finally:
         for client in clients:

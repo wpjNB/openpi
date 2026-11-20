@@ -111,8 +111,7 @@ class MultiRobotServer:
             self.executor,
             functools.partial(benchmark_policy, lambda: self.policy.infer(self.sample_obs), **self.benchmark_options),
         )
-        self.pool = SlotPool(self.profile, self.config)
-        logger.info("Policy %s profile=%s capacity=%d", self.policy_id, self.profile, len(self.pool.slots))
+        self._configure_scheduler()
         self._server = await serve(
             self._handle,
             self.host,
@@ -123,6 +122,10 @@ class MultiRobotServer:
         )
         self._ticker = asyncio.create_task(self._schedule())
         return self
+
+    def _configure_scheduler(self):
+        self.pool = SlotPool(self.profile, self.config)
+        logger.info("Policy %s profile=%s capacity=%d", self.policy_id, self.profile, len(self.pool.slots))
 
     @property
     def bound_port(self) -> int:
@@ -147,7 +150,7 @@ class MultiRobotServer:
     async def run(self):
         try:
             await self.start()
-            await asyncio.Future()
+            await self._ticker
         finally:
             await self.close()
 
@@ -265,17 +268,7 @@ class MultiRobotServer:
                 if kind == "heartbeat":
                     session.last_seen = time.monotonic()
                 elif kind == "observation":
-                    if (
-                        session.request is None
-                        or message.get("request_id") != session.request
-                        or time.monotonic() > session.slot_time
-                        or session.observation is not None
-                    ):
-                        self._send(session, {"type": "dropped", "reason": "stale_or_duplicate_observation"})
-                        continue
-                    validate_observation(message["observation"], self.sample_obs)
-                    session.last_seen = time.monotonic()
-                    session.observation = message["observation"]
+                    self._receive_observation(session, message)
                 elif kind == "unregister":
                     break
                 else:
@@ -291,6 +284,19 @@ class MultiRobotServer:
             if writer:
                 writer.cancel()
                 await asyncio.gather(writer, return_exceptions=True)
+
+    def _receive_observation(self, session, message):
+        if (
+            session.request is None
+            or message.get("request_id") != session.request
+            or time.monotonic() > session.slot_time
+            or session.observation is not None
+        ):
+            self._send(session, {"type": "dropped", "reason": "stale_or_duplicate_observation"})
+            return
+        validate_observation(message["observation"], self.sample_obs)
+        session.last_seen = time.monotonic()
+        session.observation = message["observation"]
 
     async def _sleep_until(self, when):
         await asyncio.sleep(max(0, when - time.monotonic()))
@@ -347,7 +353,7 @@ class MultiRobotServer:
     async def _infer(self, session, request, observation, deadline):
         start = time.monotonic()
         try:
-            result = await asyncio.get_running_loop().run_in_executor(self.executor, self.policy.infer, observation)
+            result = await asyncio.get_running_loop().run_in_executor(self.executor, self._infer_completed, observation)
             elapsed = time.monotonic() - start
             self._monitor(elapsed)
             if self._current(session) and not self.paused:
@@ -369,19 +375,25 @@ class MultiRobotServer:
             logger.exception("Policy inference failed; suspending scheduling")
             self._pause("policy_error")
 
+    def _infer_completed(self, observation):
+        result = self.policy.infer(observation)
+        self.benchmark_options["synchronize"]()
+        return result
+
     def _monitor(self, elapsed):
         self._latencies.append(elapsed)
         if len(self._latencies) < self.config.online_window:
             return
         budget = float(np.percentile(self._latencies, 99)) * self.benchmark_options["margin"]
         self._latencies.clear()
-        active = sum(s.slot is not None for s in self.sessions.values())
-        overloaded = (
-            active * self.config.target_hz * budget > self.config.max_utilization or budget > self.pool.slot_duration
-        )
+        overloaded = self._overloaded(budget)
         self._overload_count = self._overload_count + 1 if overloaded else 0
         if self._overload_count >= self.config.overload_windows:
             self._pause("service_budget_exceeded")
+
+    def _overloaded(self, budget):
+        active = sum(s.slot is not None for s in self.sessions.values())
+        return active * self.config.target_hz * budget > self.config.max_utilization or budget > self.pool.slot_duration
 
     def _pause(self, reason):
         self.paused = True

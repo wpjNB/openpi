@@ -1,5 +1,7 @@
 # 多客户端 VLA 调度实验：从零跑通到 GPU 容量测试
 
+本文使用固定时隙基线。在 EDF 分支上使用新调度方案，请参阅 [EDF 与观测预取实验](multi_robot_edf_zh.md)。
+
 这份手册验证的是：**一个服务端只加载一份 Policy，多个客户端动态连接，服务端按实测能力分配推理时隙**。客户端模拟机器人发送观测并接收动作，不连接机械臂，也不执行动作。
 
 建议先完成 CPU 实验，再做 GPU 实验。CPU 实验不需要权重；GPU 实验需要完整 checkpoint 和相应显存。当前实现为 Batch=1、一个推理 Worker、统一推理频率，不做动态合批。
@@ -201,7 +203,7 @@ PY
 ```bash
 set -o pipefail
 python -u scripts/serve_policy.py \
-  --multi-robot \
+  --multi-robot --scheduler-mode FIXED \
   --port 8000 \
   --profile-observation data/multi_robot_experiment/droid_sample.msgpack \
   --input-spec '{"num_cameras":2,"history_frames":1,"image_size":[224,224]}' \

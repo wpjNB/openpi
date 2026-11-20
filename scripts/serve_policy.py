@@ -11,10 +11,16 @@ import tyro
 
 from openpi.policies import policy as _policy
 from openpi.policies import policy_config as _policy_config
+from openpi.serving import edf_server
 from openpi.serving import multi_robot_server
 from openpi.serving import slot_scheduler
 from openpi.serving import websocket_policy_server
 from openpi.training import config as _config
+
+
+class SchedulerMode(enum.Enum):
+    EDF = "edf"
+    FIXED = "fixed"
 
 
 class EnvMode(enum.Enum):
@@ -54,14 +60,18 @@ class Args:
 
     # Port to serve the policy on.
     port: int = 8000
-    # Opt-in homogeneous, batch-one multi-robot scheduling. Legacy protocol remains the default.
+    # Use the multi-robot serving protocol with one batch-one worker.
     multi_robot: bool = False
     # Msgpack observation representative of the deployed input shapes and maximum text length.
     profile_observation: pathlib.Path | None = None
     # JSON object describing cameras/resolution/history; clients must match exactly.
     input_spec: str = "{}"
-    # Stable slot capacity, observation lead time and online overload detection.
+    # Multi-robot scheduling algorithm.
+    scheduler_mode: SchedulerMode = SchedulerMode.EDF
+    # Utilization, initial collection lead estimate and online overload detection.
     scheduler: slot_scheduler.SchedulerConfig = dataclasses.field(default_factory=slot_scheduler.SchedulerConfig)
+    # EDF collection budgets and optional prefetch.
+    edf: edf_server.EDFConfig = dataclasses.field(default_factory=edf_server.EDFConfig)
     # Number of completed warmup calls before measuring latency.
     profile_warmup: int = 30
     # Number of completed calls used for startup latency percentiles.
@@ -136,18 +146,20 @@ def main(args: Args) -> None:
         if not isinstance(sample, dict) or not isinstance(input_spec, dict):
             raise ValueError("Profiling observation and input spec must be objects")
         checkpoint = args.policy if isinstance(args.policy, Checkpoint) else DEFAULT_CHECKPOINT[args.env]
-        server = multi_robot_server.MultiRobotServer(
-            policy,
-            sample,
-            policy_id=checkpoint.config,
-            input_spec=input_spec,
-            action_horizon=_config.get_config(checkpoint.config).model.action_horizon,
-            config=args.scheduler,
-            port=args.port,
-            warmup=args.profile_warmup,
-            runs=args.profile_runs,
-            margin=args.profile_margin,
-        )
+        options = {
+            "policy_id": checkpoint.config,
+            "input_spec": input_spec,
+            "action_horizon": _config.get_config(checkpoint.config).model.action_horizon,
+            "config": args.scheduler,
+            "port": args.port,
+            "warmup": args.profile_warmup,
+            "runs": args.profile_runs,
+            "margin": args.profile_margin,
+        }
+        if args.scheduler_mode is SchedulerMode.EDF:
+            server = edf_server.EDFRobotServer(policy, sample, edf=args.edf, **options)
+        else:
+            server = multi_robot_server.MultiRobotServer(policy, sample, **options)
         asyncio.run(server.run())
         return
 

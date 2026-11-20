@@ -1,4 +1,6 @@
-# Multi-robot VLA serving (V1)
+# Multi-robot VLA serving (fixed-slot baseline)
+
+On the EDF branch, `--multi-robot` defaults to EDF. See the [EDF and prefetch guide](multi_robot_edf_zh.md) for the new mode. The examples on this page explicitly select the fixed-slot baseline.
 
 One loaded policy serves dynamically registered robots through one dedicated inference
 thread, with batch size 1. Enable this protocol explicitly; the existing
@@ -37,7 +39,7 @@ also checked against the sample, not merely trusted based on this label.
 
 ```bash
 uv run --frozen scripts/serve_policy.py \
-  --multi-robot --profile-observation sample.msgpack \
+  --multi-robot --scheduler-mode FIXED --profile-observation sample.msgpack \
   --input-spec '{"num_cameras":2,"history_frames":1,"image_size":[224,224]}' \
   --scheduler.target-hz 5 --scheduler.max-utilization 0.85 \
   --scheduler.lead-time 0.015 --profile-warmup 30 --profile-runs 300 \

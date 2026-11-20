@@ -27,6 +27,7 @@ def parser():
     result.add_argument("--clients", type=int, default=1)
     result.add_argument("--robot-prefix", default="load")
     result.add_argument("--hz", type=float, default=5)
+    result.add_argument("--min-hz", type=float, help="Minimum EDF reservation rate, defaults to --hz")
     result.add_argument("--action-hz", type=float, default=50)
     result.add_argument("--max-latency-ms", type=float, default=200)
     result.add_argument("--heartbeat-interval", type=float, default=0.5)
@@ -88,7 +89,7 @@ async def main(args):
                         print(f"{robot}: {kind} reason={message.get('reason')}", flush=True)
                 if window_start <= time.monotonic() < window_end:
                     reason = message.get("reason")
-                    record["events"][kind if reason is None else f"{kind}:{reason}"] += 1
+                    record["events"][kind if reason is None else f"{kind}:{reason}"] += message.get("count", 1)
 
         return actions, event
 
@@ -101,7 +102,7 @@ async def main(args):
                 "policy_id": args.policy_id,
                 "input_spec": spec,
                 "target_hz": args.hz,
-                "min_hz": args.hz,
+                "min_hz": args.hz if args.min_hz is None else args.min_hz,
                 "action_hz": args.action_hz,
                 "max_latency_ms": args.max_latency_ms,
             }
